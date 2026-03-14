@@ -1,0 +1,237 @@
+---
+- name: Deploy encrypted backup project with TLS proxy
+  hosts: app
+  become: true
+
+  vars:
+    destination_path: '{{ lookup("env", "DEPLOY_PATH") }}'
+    github_url: '{{ lookup("env", "GITHUB_URL") }}'
+    luks_img: '{{ lookup("env", "DEPLOY_PATH") }}/encrypted_disk.img'
+    luks_name: 'backup_disk'
+    luks_mount: '{{ lookup("env", "DEPLOY_PATH") }}/data/backup'
+    luks_passphrase: '{{ lookup("env", "LUKS_PASSPHRASE") }}'
+
+  tasks:
+    - name: Install cryptsetup
+      apt:
+        pkg:
+          - cryptsetup
+        state: present
+        update_cache: yes
+
+    - name: Create project directory
+      file:
+        path: "{{ destination_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Clone the repository
+      git:
+        repo: '{{ github_url }}'
+        dest: "{{ destination_path }}"
+        update: yes
+        force: yes
+
+    - name: Ensure backup mount directory exists
+      file:
+        path: "{{ luks_mount }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create encrypted disk image if missing
+      command:
+        cmd: truncate -s 500M {{ luks_img }}
+      args:
+        creates: "{{ luks_img }}"
+
+    - name: Check if image is already LUKS
+      command: cryptsetup isLuks {{ luks_img }}
+      register: luks_check
+      failed_when: false
+      changed_when: false
+
+    - name: Format image as LUKS
+      shell: |
+        printf '%s' '{{ luks_passphrase }}' | cryptsetup luksFormat {{ luks_img }} --batch-mode -
+      when: luks_check.rc != 0
+
+    - name: Check if mapper exists
+      stat:
+        path: "/dev/mapper/{{ luks_name }}"
+      register: mapper_check
+
+    - name: Open LUKS image
+      shell: |
+        printf '%s' '{{ luks_passphrase }}' | cryptsetup luksOpen {{ luks_img }} {{ luks_name }} -
+      when: not mapper_check.stat.exists
+
+    - name: Check filesystem type
+      command: blkid -o value -s TYPE /dev/mapper/{{ luks_name }}
+      register: fs_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create filesystem if missing
+      command: mkfs.ext4 /dev/mapper/{{ luks_name }}
+      when: fs_check.rc != 0
+
+    - name: Mount encrypted filesystem
+      mount:
+        path: "{{ luks_mount }}"
+        src: "/dev/mapper/{{ luks_name }}"
+        fstype: ext4
+        opts: defaults,nofail
+        state: mounted
+
+    - name: Write patched docker-compose.yml
+      copy:
+        dest: "{{ destination_path }}/docker-compose.yml"
+        mode: "0644"
+        content: |
+          services:
+            proxy:
+              image: nginx:1.27-alpine
+              ports:
+                  - 443:8080
+                  - 8083:8081
+                  - 8084:8082
+              networks:
+                backup_proxy:
+                  ipv4_address: 172.22.0.10
+              volumes:
+                - ./config/proxy/http:/etc/nginx/conf.d
+                - ./config/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+                - /sdata/certs/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
+                - /sdata/certs/privkey.pem:/etc/nginx/certs/privkey.pem:ro
+
+            server1:
+              build: ./Dockerfiles/ubuntu
+              container_name: server1
+              hostname: server1
+              restart: always
+              volumes:
+                - ./data/server1:/server1files
+                - ./data/server1/files/public_html:/var/www/html
+                - ./config/proxy/webserver.conf:/etc/nginx/sites-enabled/default:ro
+              ports:
+                - "8081:80"
+              networks:
+                backup_proxy:
+                  ipv4_address: 172.22.0.11
+
+            server2:
+              build: ./Dockerfiles/ubuntu
+              container_name: server2
+              hostname: server2
+              restart: always
+              volumes:
+                - ./data/server2:/server2files
+                - ./data/server2/files/public_html:/var/www/html
+                - ./config/proxy/webserver.conf:/etc/nginx/sites-enabled/default:ro
+              ports:
+                - "8082:80"
+              networks:
+                backup_proxy:
+                  ipv4_address: 172.22.0.12
+
+            backup:
+              build: ./Dockerfiles/ubuntu
+              container_name: backup
+              hostname: backup
+              restart: always
+              cap_add:
+                - SYS_ADMIN
+              volumes:
+                - ./config/rsnapshot/rsnapshot.conf:/etc/rsnapshot.conf:ro
+                - ./config/cron/crontab:/etc/cron.d/rsnapshot:ro
+                - ./config/rsnapshot:/var/log/rsnapshot:rw
+                - ./data/backup/snapshots:/snapshots
+              networks:
+                backup_proxy:
+                  ipv4_address: 172.22.0.13
+
+          networks:
+            backup_proxy:
+              driver: bridge
+              ipam:
+                driver: default
+                config:
+                  - subnet: 172.22.0.0/16
+
+    - name: Write patched reverse.conf
+      copy:
+        dest: "{{ destination_path }}/config/proxy/http/reverse.conf"
+        mode: "0644"
+        content: |
+          upstream web-robin {
+              # round robin algorithm
+              server server1:80 fail_timeout=3s;
+              server server2:80 fail_timeout=3s;
+          }
+
+          upstream web-least-conn {
+              # least connection algorithm
+              least_conn;
+              server server1:80 fail_timeout=3s;
+              server server2:80 fail_timeout=3s;
+          }
+
+          upstream web-ip-hash {
+              # ip hash algorithm
+              # The method guarantees that requests from the same address get to the same server unless it is not available
+              ip_hash;
+              server server1:80 fail_timeout=3s;
+              server server2:80 fail_timeout=3s;
+          }
+
+          server {
+              listen 8080 ssl;
+              server_name _;
+
+              ssl_certificate /etc/nginx/certs/fullchain.pem;
+              ssl_certificate_key /etc/nginx/certs/privkey.pem;
+              ssl_protocols TLSv1.2 TLSv1.3;
+
+              location / {
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_connect_timeout 3s;
+                  proxy_pass http://web-robin;
+              }
+          }
+
+          server {
+              listen 8081;
+              server_name _;
+
+              location / {
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_connect_timeout 3s;
+                  proxy_pass http://web-least-conn;
+              }
+          }
+
+          server {
+              listen 8082;
+              server_name _;
+
+              location / {
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_connect_timeout 3s;
+                  proxy_pass http://web-ip-hash;
+              }
+          }
+
+    - name: Run docker compose up -d --build
+      command:
+        cmd: docker compose up -d --build
+        chdir: "{{ destination_path }}"
+      changed_when: true

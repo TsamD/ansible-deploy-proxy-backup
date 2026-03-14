@@ -1,0 +1,31 @@
+---
+- name: Generate self-signed certificates
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Create cert directory
+      file:
+        path: /sdata/certs
+        state: directory
+        mode: '0755'
+
+    - name: Generate self-signed certificate
+      command: >
+        openssl req -x509 -nodes -days 365
+        -newkey rsa:2048
+        -keyout /sdata/certs/privkey.pem
+        -out /sdata/certs/fullchain.pem
+        -subj "/CN={{ inventory_hostname }}"
+      args:
+        creates: /sdata/certs/fullchain.pem
+
+    - name: Set permissions on private key
+      file:
+        path: /sdata/certs/privkey.pem
+        mode: '0600'
+
+    - name: Set permissions on certificate
+      file:
+        path: /sdata/certs/fullchain.pem
+        mode: '0644'

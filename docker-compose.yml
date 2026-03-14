@@ -1,0 +1,14 @@
+services:
+  ansible:
+    image: alpine/ansible
+    environment:
+      - "ANSIBLE_HOST_KEY_CHECKING=False"
+      - "GITHUB_URL=https://github.com/TsamD/rsnapshot-luks-proxy.git"
+      - "DEPLOY_PATH=/opt/rsnapshot-luks-proxy"
+      - "LUKS_PASSPHRASE=coucou"
+      - "CERT_OUTPUT_DIR=/sdata/certs"
+    volumes:
+      - ./ssh_keys:/root/.ssh
+      - ./playbooks:/playbooks
+      - ./inventory.ini:/apps/inventory.ini
+    entrypoint: ["tail", "-f", "/dev/null"]

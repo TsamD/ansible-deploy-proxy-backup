@@ -1,0 +1,85 @@
+- name: Deploy LUKS backup project
+  hosts: app
+  become: true
+  vars:
+    destination_path: '{{ lookup("env", "DEPLOY_PATH_LUKS") }}'
+    github_url: '{{ lookup("env", "GITHUB_URL_LUKS") }}'
+    luks_img: '{{ lookup("env", "DEPLOY_PATH_LUKS") }}/encrypted_disk.img'
+    luks_name: 'backup_disk'
+    luks_mount: '{{ lookup("env", "DEPLOY_PATH_LUKS") }}/data/backup'
+    luks_passphrase: '{{ lookup("env", "LUKS_PASSPHRASE") }}'
+  tasks:
+    - name: Install cryptsetup
+      apt:
+        pkg:
+          - cryptsetup
+        state: present
+        update_cache: yes
+
+    - name: Create project directory
+      file:
+        path: "{{ destination_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Clone the repository
+      git:
+        repo: '{{ github_url }}'
+        dest: "{{ destination_path }}"
+        update: yes
+
+    - name: Ensure backup mount directory exists
+      file:
+        path: "{{ luks_mount }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create encrypted disk image if missing
+      command:
+        cmd: truncate -s 500M {{ luks_img }}
+      args:
+        creates: "{{ luks_img }}"
+
+    - name: Check if image is already LUKS
+      command: cryptsetup isLuks {{ luks_img }}
+      register: luks_check
+      failed_when: false
+      changed_when: false
+
+    - name: Format image as LUKS
+      shell: |
+        printf '%s' '{{ luks_passphrase }}' | cryptsetup luksFormat {{ luks_img }} --batch-mode -
+      when: luks_check.rc != 0
+
+    - name: Check if mapper exists
+      stat:
+        path: "/dev/mapper/{{ luks_name }}"
+      register: mapper_check
+
+    - name: Open LUKS image
+      shell: |
+        printf '%s' '{{ luks_passphrase }}' | cryptsetup luksOpen {{ luks_img }} {{ luks_name }} -
+      when: not mapper_check.stat.exists
+
+    - name: Check filesystem type
+      command: blkid -o value -s TYPE /dev/mapper/{{ luks_name }}
+      register: fs_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create filesystem if missing
+      command: mkfs.ext4 /dev/mapper/{{ luks_name }}
+      when: fs_check.rc != 0
+
+    - name: Mount encrypted filesystem
+      mount:
+        path: "{{ luks_mount }}"
+        src: "/dev/mapper/{{ luks_name }}"
+        fstype: ext4
+        state: mounted
+
+    - name: Run docker compose up -d --build
+      command:
+        cmd: docker compose up -d --build
+        chdir: "{{ destination_path }}"
+      changed_when: true

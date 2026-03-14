@@ -1,0 +1,4 @@
+- import_playbook: required-packages.yml
+- import_playbook: docker.yml
+- import_playbook: certs.yml
+- import_playbook: deploy.yml

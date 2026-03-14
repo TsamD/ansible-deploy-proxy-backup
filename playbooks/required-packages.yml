@@ -1,0 +1,18 @@
+- name: Install required packages
+  hosts: app
+  become: True
+  tasks:
+    - name: apt packages
+      apt:
+        pkg:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+          - certbot
+          - git
+          - virtualenv
+          - python3-setuptools
+        update_cache: yes
+        state: latest

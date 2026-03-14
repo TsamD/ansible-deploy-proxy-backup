@@ -1,0 +1,11 @@
+- name: Install Docker
+  hosts: app
+  become: True
+  tasks:
+    - name: Download script
+      get_url:
+        url: https://get.docker.com
+        dest: /tmp/get-docker.sh
+        mode: '0755'
+    - name: Install
+      command: sh /tmp/get-docker.sh
