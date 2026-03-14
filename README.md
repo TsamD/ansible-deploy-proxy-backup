@@ -1,5 +1,3 @@
----
-
 # Automated Resilient Web Infrastructure Deployment (Ansible)
 
 This repository provides an **automated deployment framework** for a resilient web infrastructure combining:
