@@ -55,29 +55,11 @@ All services are deployed using **Docker Compose**.
 
 # Infrastructure Architecture
 
-The deployed architecture follows a classical **reverse proxy pattern**:
+The deployed infrastructure combines a reverse proxy, round-robin load balancing, and a secure backup architecture using rsnapshot with LUKS encrypted storage:
+![Detailed Infrastructure](architecture2.png)
+This deployment repository automatically installs and configures the infrastructure available at:
 
-```
-		client
-  		  │
-	     HTTPS (443)
-  	          │
-	Nginx Reverse Proxy
-         (load balancing)
-                  │
-  ┌───────────────┴───────────────┐
-  │                               │
- webserver1                    webserver2
-  │                               │
-  ───────────────────────────────── 
-		  │
-             backup server
-                  │
-               rsnapshot
-                  │
-          LUKS encrypted disk
-```
-
+https://github.com/TsamD/rsnapshot-luks-proxy
 ---
 
 # Reverse Proxy
