@@ -59,7 +59,7 @@ The deployed infrastructure combines a reverse proxy, round-robin load balancing
 ![Detailed Infrastructure](architecture2.png)
 This deployment repository automatically installs and configures the infrastructure available at:
 
-https://github.com/TsamD/rsnapshot-luks-proxy
+[https://github.com/TsamD/rsnapshot-luks-proxy](https://github.com/TsamD/rsnapshot-luks-proxy)
 ---
 
 # Reverse Proxy
